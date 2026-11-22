@@ -24,12 +24,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.FileSystemException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.UUID;
 
@@ -47,6 +53,7 @@ import org.jpos.q2.qbean.SystemMonitor;
 import org.jpos.util.Log;
 import org.jpos.util.Realm;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.io.TempDir;
 
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -62,6 +69,50 @@ public class Q2Test {
     @AfterAll
     public static void tearDown() throws Exception {
         m_q2.shutdown(true);
+    }
+
+    @Test
+    public void testDeployElementReplacesDescriptorRatherThanRewritingIt(@TempDir Path deployDir) throws Exception {
+        Path descriptor = deployDir.resolve("qbean.xml");
+        String original = "<old/>";
+        Files.writeString(descriptor, original);
+        Path previous = deployDir.resolve("previous.tmp");
+        try {
+            Files.createLink(previous, descriptor);
+        } catch (UnsupportedOperationException | FileSystemException e) {
+            assumeTrue(false, "Hard links unavailable in the test directory: " + e);
+        }
+
+        Q2 q2 = new Q2(deployDir.toString());
+        try {
+            q2.deployElement(new Element("replacement"), "qbean.xml", false, false);
+
+            // A direct write would also overwrite the file observed through the hard link.
+            assertEquals(original, Files.readString(previous));
+            assertTrue(Files.readString(descriptor).contains("<replacement"));
+            try (var files = Files.list(deployDir)) {
+                assertEquals(2, files.count());
+            }
+        } finally {
+            q2.stop();
+        }
+    }
+
+    @Test
+    public void testDeployElementCleansUpStagedFileWhenMoveFails(@TempDir Path deployDir) throws Exception {
+        Path target = Files.createDirectory(deployDir.resolve("qbean.xml"));
+        Path sentinel = Files.writeString(target.resolve("keep"), "unchanged");
+        Q2 q2 = new Q2(deployDir.toString());
+        try {
+            assertThrows(IOException.class,
+                () -> q2.deployElement(new Element("replacement"), "qbean.xml", false, false));
+            assertEquals("unchanged", Files.readString(sentinel));
+            try (var files = Files.list(deployDir)) {
+                assertEquals(1, files.count());
+            }
+        } finally {
+            q2.stop();
+        }
     }
 
     @Test

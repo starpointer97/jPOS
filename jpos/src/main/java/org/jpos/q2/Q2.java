@@ -74,8 +74,10 @@ import javax.management.ObjectName;
 import java.io.*;
 import java.lang.management.ManagementFactory;
 import java.nio.file.FileSystem;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
@@ -1070,7 +1072,8 @@ public class Q2 implements FileFilter, Runnable {
     }
     /**
      * Writes a single QBean descriptor to {@code fileName} inside the deploy
-     * directory, optionally encrypting it and/or marking it transient.
+     * directory, optionally encrypting it and/or marking it transient. The
+     * descriptor is moved into place atomically after it has been written.
      *
      * @param e            QBean descriptor element
      * @param fileName     target file name relative to the deploy directory
@@ -1094,13 +1097,28 @@ public class Q2 implements FileFilter, Runnable {
         File qbean = new File (deployDir, fileName);
         if (isTransient) {
             e.setAttribute("instance", getInstanceId().toString());
-            qbean.deleteOnExit();
         }
         if (encrypt) {
             doc = encrypt (doc);
         }
-        try (Writer writer = new BufferedWriter(new FileWriter(qbean))) {
-            out.output(doc, writer);
+        Path target = qbean.toPath().toAbsolutePath();
+        // Stage next to the target with a suffix the deploy scanner ignores.
+        Path staged = Files.createTempFile(target.getParent(), ".q2-deploy-", ".tmp");
+        try {
+            try (Writer writer = new BufferedWriter(new FileWriter(staged.toFile()))) {
+                out.output(doc, writer);
+            }
+            Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException | RuntimeException failure) {
+            try {
+                Files.deleteIfExists(staged);
+            } catch (IOException | RuntimeException cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+        if (isTransient) {
+            qbean.deleteOnExit();
         }
     }
 
